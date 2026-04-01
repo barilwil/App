@@ -1,0 +1,29 @@
+# ── Core API ──────────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+httpx
+openai
+python-dotenv
+
+# ── STT ───────────────────────────────────────────────────────────────────────
+# faster-whisper: install AFTER torch (order matters on Jetson)
+# On Jetson: pip install torch torchvision torchaudio --index-url <jetpack wheel url>
+faster-whisper
+
+# ── VAD ───────────────────────────────────────────────────────────────────────
+# Silero VAD (loaded via torch.hub — no separate install needed)
+# torch must be installed first
+
+# ── Wake Word ────────────────────────────────────────────────────────────────
+openwakeword
+
+# ── Audio capture ─────────────────────────────────────────────────────────────
+# On Jetson: sudo apt install portaudio19-dev && pip install pyaudio
+pyaudio
+
+# ── ElevenLabs (optional — only needed if TTS_ENGINE=elevenlabs) ──────────────
+# httpx is already listed above, no additional package needed
+# The ElevenLabs SDK is NOT required — we call the REST API directly
+
+# ── Numpy (shared by VAD + Whisper) ───────────────────────────────────────────
+numpy
