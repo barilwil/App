@@ -42,6 +42,7 @@ export default function App() {
   const [typedText, setTypedText]   = useState('')
   const [liveText, setLiveText]     = useState('')
   const [circuitContext, setCircuitContext] = useState(null)
+  const [circuitSubmitPending, setCircuitSubmitPending] = useState(false)
 
   // ── UIN form state ─────────────────────────────────────────────────────────
   const [uinInput, setUinInput]   = useState('')
@@ -144,8 +145,14 @@ export default function App() {
   })
 
   // ── Actions ────────────────────────────────────────────────────────────────
-  const sendMessage = useCallback((text, ctx = null) => {
-    if (!text.trim()) return
+  const sendMessage = useCallback((text, ctx = null, options = {}) => {
+    const {
+      skipUserMessage = false,
+      skipProcessingSetup = false,
+      messageMode = 'default',
+    } = options
+
+    if (!text.trim()) return false
     resetSleep()
 
     const isAssistantTab = chatTabRef.current === 'assistant'
@@ -171,16 +178,18 @@ export default function App() {
         setLiveText('')
         setTypingOpen(false)
         setTypedText('')
-        return // ← do not send to LLM
+        return true // ← do not send to LLM
       }
     }
 
     // ── Normal message path (both tabs) ───────────────────────────────────
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return false
     setInterrupted(false)
-    setMessages(prev => [...prev, { role: 'user', text }])
-    setPhase('thinking')
-    thinkStartRef.current = Date.now()
+    if (!skipUserMessage) setMessages(prev => [...prev, { role: 'user', text }])
+    if (!skipProcessingSetup) {
+      setPhase('thinking')
+      thinkStartRef.current = Date.now()
+    }
     setLiveText('')
     setTypingOpen(false)
     setTypedText('')
@@ -203,12 +212,14 @@ export default function App() {
     wsRef.current.send(JSON.stringify({
       text,
       circuit_context: ctx || circuitContext || null,
+      message_mode: messageMode,
       student_name: student?.name || 'Student',
       captions_on: isAssistantTab,
       dashboard_context: dashCtx,
       lab_context: labCtx,
     }))
     setCircuitContext(null)
+    return true
   }, [activeLab, circuitContext, resetSleep, student, scrollBottom, setInterrupted, setPhase, wsRef, thinkStartRef, dashVoice])
 
   useEffect(() => { sendMessageRef.current = sendMessage }, [sendMessage])
@@ -341,15 +352,50 @@ export default function App() {
   }, [sendMessage])
 
   const handleCircuitSubmit = useCallback(async (payload, summary) => {
+    const isChatProcessing = phase === 'thinking' || phase === 'streaming' || circuitSubmitPending
+    if (isChatProcessing) return false
+
+    const analyzerPrompt = [
+      'Interpret only the current circuit analyzer submission.',
+      'Explain the likely fault or mismatch, what the analyzer result suggests, and the next concrete checks the student should perform.',
+      'Do not answer earlier chat topics or include lab report writing advice unless the current submission explicitly asks for that.',
+      `Current circuit: ${payload?.circuit_name || 'unknown'}.`,
+    ].join(' ')
+
+    setCircuitSubmitPending(true)
+    setMessages(prev => [...prev, { role: 'user', text: summary }])
+    setPhase('thinking')
+    thinkStartRef.current = Date.now()
+    setLiveText('')
+    setTypingOpen(false)
+    setTypedText('')
+    if (chatTabRef.current === 'assistant') scrollBottom()
+
     try {
       const r = await fetch(`${API_URL}/debug`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
       const ctx = r.ok ? (await r.json()).context : null
-      sendMessage(summary, ctx)
-    } catch { sendMessage(summary) }
-  }, [sendMessage])
+      const sent = sendMessage(analyzerPrompt, ctx, {
+        skipUserMessage: true,
+        skipProcessingSetup: true,
+        messageMode: 'circuit_analyzer',
+      })
+      if (!sent) setPhase('idle')
+      return sent
+    } catch {
+      const sent = sendMessage(analyzerPrompt, null, {
+        skipUserMessage: true,
+        skipProcessingSetup: true,
+        messageMode: 'circuit_analyzer',
+      })
+      if (!sent) setPhase('idle')
+      return sent
+    } finally {
+      setCircuitSubmitPending(false)
+    }
+  }, [phase, circuitSubmitPending, sendMessage, scrollBottom, setPhase, thinkStartRef])
 
   const handleTaLogout = useCallback(async () => {
     if (ta?.token) {
@@ -404,6 +450,7 @@ export default function App() {
         onLogout={handleTaLogout}
         onOpenAdmin={() => setScreen('admin-panel')}
         onLaunchLab={(course, lab) => { setActiveCourse(course); setActiveLab(lab); setScreen('startup') }}
+        appWindow={appWindow}
       />
     )
   }
@@ -435,6 +482,7 @@ export default function App() {
         sendMessage={sendMessage}
         handleRetryMessage={handleRetryMessage}
         handleCircuitSubmit={handleCircuitSubmit}
+        circuitSubmitPending={circuitSubmitPending}
         handleEnd={handleEnd}
         appWindow={appWindow}
         scrollBottom={scrollBottom}

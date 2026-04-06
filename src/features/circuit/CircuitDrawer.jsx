@@ -1,6 +1,10 @@
 import { useState, useEffect, useMemo } from 'react'
 import { API_URL } from '../../app/constants'
 
+const HARDCODED_TEMP = 27
+const HARDCODED_TNOM = 27
+const HARDCODED_STRICT = false
+
 function parseCircuitVariationLabel(name = '') {
   const trimmed = String(name || '').trim()
   if (!trimmed) return ''
@@ -76,21 +80,19 @@ function groupMappings(mappings = []) {
   })).filter(group => group.variations.length)
 }
 
-export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
+export default function CircuitDrawer({ open, onClose, onSubmit, activeLab, submitDisabled = false }) {
   const [circuits, setCircuits] = useState([])
   const [selected, setSelected] = useState('')
   const [schema, setSchema] = useState(null)
   const [loading, setLoading] = useState(false)
   const [nodeVals, setNodeVals] = useState({})
   const [srcVals, setSrcVals] = useState({})
-  const [temp, setTemp] = useState('27')
-  const [tnom, setTnom] = useState('27')
-  const [strict, setStrict] = useState(false)
   const [mappings, setMappings] = useState([])
   const [taskKey, setTaskKey] = useState('')
   const [mappingLoading, setMappingLoading] = useState(false)
   const [imageCatalog, setImageCatalog] = useState([])
   const [imageLoadFailed, setImageLoadFailed] = useState(false)
+  const [previewAspectRatio, setPreviewAspectRatio] = useState(null)
 
   useEffect(() => {
     if (!open) return
@@ -192,9 +194,6 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
         const sv = {}
         ;(d.source_currents || []).forEach(s => { sv[s.source_name] = '' })
         setSrcVals(sv)
-        if (d.golden_defaults?.temp !== undefined) setTemp(String(d.golden_defaults.temp))
-        if (d.golden_defaults?.tnom !== undefined) setTnom(String(d.golden_defaults.tnom))
-        setStrict(false)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -230,6 +229,7 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
 
   useEffect(() => {
     setImageLoadFailed(false)
+    setPreviewAspectRatio(null)
   }, [selectedVariationImageUrl])
 
   const buildSummary = (p) => {
@@ -256,21 +256,17 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
   }
 
   const handleDone = () => {
-    if (!schema) return
+    if (!schema || submitDisabled) return
     try {
       const nv = parseMap(nodeVals, 'Node voltage')
       const sv = parseMap(srcVals, 'Source current')
-      if (strict) {
-        const missing = (schema.nodes || []).map(n => n.node_name).filter(n => nv[n] === undefined)
-        if (missing.length) throw new Error(`Missing: ${missing.join(', ')}`)
-      }
       const payload = {
         circuit_name: selected,
         node_voltages: nv,
         source_currents: sv,
-        temp: parseOpt('Temp', temp),
-        tnom: parseOpt('Tnom', tnom),
-        strict,
+        temp: HARDCODED_TEMP,
+        tnom: HARDCODED_TNOM,
+        strict: HARDCODED_STRICT,
       }
       onSubmit(payload, buildSummary(payload))
       onClose()
@@ -287,9 +283,6 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
     const sv = {}
     ;(schema.source_currents || []).forEach(s => { sv[s.source_name] = '' })
     setSrcVals(sv)
-    if (schema.golden_defaults?.temp !== undefined) setTemp(String(schema.golden_defaults.temp))
-    if (schema.golden_defaults?.tnom !== undefined) setTnom(String(schema.golden_defaults.tnom))
-    setStrict(false)
   }
 
   const availableVariations = activeTask?.variations || []
@@ -389,12 +382,28 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
               </div>
 
               {!!selectedVariationImageUrl && !imageLoadFailed ? (
-                <img
-                  src={selectedVariationImageUrl}
-                  alt={selectedVariation?.variation_label || selected || 'Circuit variation'}
-                  className="circuit-preview-image"
-                  onError={() => setImageLoadFailed(true)}
-                />
+                <div
+                  className="circuit-preview-frame"
+                  style={previewAspectRatio ? { aspectRatio: previewAspectRatio } : undefined}
+                >
+                  <div className="circuit-preview-shell">
+                    <img
+                      src={selectedVariationImageUrl}
+                      alt={selectedVariation?.variation_label || selected || 'Circuit variation'}
+                      className="circuit-preview-image"
+                      onLoad={event => {
+                        const { naturalWidth, naturalHeight } = event.currentTarget
+                        if (naturalWidth > 0 && naturalHeight > 0) {
+                          setPreviewAspectRatio(`${naturalWidth} / ${naturalHeight}`)
+                        }
+                      }}
+                      onError={() => {
+                        setImageLoadFailed(true)
+                        setPreviewAspectRatio(null)
+                      }}
+                    />
+                  </div>
+                </div>
               ) : (
                 <div className="empty-box circuit-preview-empty">
                   {imageLoadFailed ? 'Could not load the mapped image for this variation.' : 'No diagram is available for this selection yet.'}
@@ -406,31 +415,6 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
               )}
             </div>
 
-            <div className="circuit-card">
-              <div className="circuit-card-header">
-                <div>
-                  <div className="field-label">Run settings</div>
-                  <div className="circuit-card-title">Solver defaults</div>
-                </div>
-                <span className="circuit-chip subtle">{nodeCount} nodes • {sourceCount} currents</span>
-              </div>
-
-              <div className="grid-2">
-                <div>
-                  <div className="field-label">Temp (°C)</div>
-                  <input className="field-input" value={temp} onChange={e => setTemp(e.target.value)} disabled={loading} />
-                </div>
-                <div>
-                  <div className="field-label">Tnom (°C)</div>
-                  <input className="field-input" value={tnom} onChange={e => setTnom(e.target.value)} disabled={loading} />
-                </div>
-              </div>
-
-              <label className="check-row">
-                <input type="checkbox" checked={strict} onChange={e => setStrict(e.target.checked)} disabled={loading} />
-                Require all node measurements
-              </label>
-            </div>
           </aside>
 
           <section className="circuit-modal-main">
@@ -460,14 +444,15 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
                         <div key={n.node_name} className="mrow circuit-mrow">
                           <div>
                             <div className="mname">{n.node_name}</div>
-                            {n.measurement_key && <div className="mkey">{n.measurement_key}</div>}
                           </div>
-                          <input
-                            className="field-input"
-                            value={nodeVals[n.node_name] || ''}
-                            onChange={e => setNodeVals(v => ({ ...v, [n.node_name]: e.target.value }))}
-                            placeholder={n.golden_value != null ? String(n.golden_value) : ''}
-                          />
+                          <div className="circuit-input-wrap">
+                            <input
+                              className="field-input circuit-input-field"
+                              value={nodeVals[n.node_name] || ''}
+                              onChange={e => setNodeVals(v => ({ ...v, [n.node_name]: e.target.value }))}
+                            />
+                            <span className="circuit-input-unit" aria-hidden="true">V</span>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -491,14 +476,15 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
                         <div key={s.source_name} className="mrow circuit-mrow">
                           <div>
                             <div className="mname">{s.source_name}</div>
-                            {s.measurement_key && <div className="mkey">{s.measurement_key}</div>}
                           </div>
-                          <input
-                            className="field-input"
-                            value={srcVals[s.source_name] || ''}
-                            onChange={e => setSrcVals(v => ({ ...v, [s.source_name]: e.target.value }))}
-                            placeholder={s.golden_value != null ? String(s.golden_value) : ''}
-                          />
+                          <div className="circuit-input-wrap">
+                            <input
+                              className="field-input circuit-input-field"
+                              value={srcVals[s.source_name] || ''}
+                              onChange={e => setSrcVals(v => ({ ...v, [s.source_name]: e.target.value }))}
+                            />
+                            <span className="circuit-input-unit" aria-hidden="true">A</span>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -519,6 +505,10 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
                 <div className="schema-note circuit-note-copy">{schema.notes.recommended}</div>
               </div>
             )}
+
+            {submitDisabled && (
+              <div className="circuit-inline-blocked">Please wait for the current response to finish before submitting another circuit debug request.</div>
+            )}
           </section>
         </div>
 
@@ -529,7 +519,7 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab }) {
           </div>
           <div className="circuit-actions-buttons">
             <button className="btn-ghost" onClick={handleReset} disabled={loading || !schema}>Reset</button>
-            <button className="btn-white" onClick={handleDone} disabled={loading || !schema || !selected}>Submit to AI →</button>
+            <button className="btn-white" onClick={handleDone} disabled={loading || !schema || !selected || submitDisabled}>Submit to AI →</button>
           </div>
         </div>
       </div>

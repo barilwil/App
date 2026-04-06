@@ -1161,6 +1161,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             user_text          = message.get("text", "")
             circuit_context    = message.get("circuit_context", None)
+            message_mode       = str(message.get("message_mode", "default") or "default").strip().lower()
             student_name       = message.get("student_name", "Student")
             captions_on        = message.get("captions_on", False)
             dashboard_context  = message.get("dashboard_context", None) or {}
@@ -1173,16 +1174,23 @@ async def websocket_endpoint(websocket: WebSocket):
             except (TypeError, ValueError):
                 lab_number = None
 
-            conversation_history.append({"role": "user", "content": user_text})
+            is_circuit_message = message_mode == "circuit_analyzer"
+            if is_circuit_message:
+                request_history = [{"role": "user", "content": user_text}]
+            else:
+                conversation_history.append({"role": "user", "content": user_text})
+                request_history = conversation_history
 
             client      = make_ollama_client()
             model_big   = get_setting("model_captions_on")
             model_small = get_setting("model_captions_off")
-            lab_grounding = await get_lab_manual_grounding(
-                question=user_text,
-                lab_number=lab_number,
-                current_part=current_part,
-            )
+            lab_grounding = None
+            if not is_circuit_message:
+                lab_grounding = await get_lab_manual_grounding(
+                    question=user_text,
+                    lab_number=lab_number,
+                    current_part=current_part,
+                )
 
             if captions_on:
                 sys_p = (
@@ -1204,11 +1212,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     sys_p += f"\n\n{lab_grounding}"
                 if circuit_context:
                     sys_p += f"\n\n{circuit_context}"
+                if message_mode == "circuit_analyzer":
+                    sys_p += (
+                        "\n\nThis message came from the circuit analyzer submit flow. Treat it as a structured debug request, not a general chat question. "
+                        "Only do these things: summarize the analyzer finding, explain the most likely cause, and give a short list of concrete verification steps. "
+                        "Do not include lab report sections, report-writing advice, background theory, objectives, conclusions, or answers to prior conversation topics unless the current message explicitly asks for them. "
+                        "Stay tightly scoped to the current circuit submission and its deterministic analyzer result."
+                    )
                 full = ""
                 stream = await client.chat.completions.create(
                     model=model_big,
-                    messages=[{"role": "system", "content": sys_p}] + conversation_history,
-                    stream=True, max_tokens=int(get_setting('max_tokens_large') or 4096),
+                    messages=[{"role": "system", "content": sys_p}] + request_history,
+                    stream=True, max_tokens=(1200 if message_mode == 'circuit_analyzer' else int(get_setting('max_tokens_large') or 4096)),
                 )
                 async for chunk in stream:
                     token = chunk.choices[0].delta.content or ""
@@ -1245,11 +1260,17 @@ async def websocket_endpoint(websocket: WebSocket):
                         sys_p += f"\nThe student is currently working on: {current_part}."
                     if dashboard_context.get("mode") == "voice":
                         sys_p += "\nThe student is using voice mode on the lab dashboard."
+                if message_mode == "circuit_analyzer":
+                    sys_p += (
+                        "\n\nThis message came from the circuit analyzer submit flow. Treat it as a structured debug request. "
+                        "Only summarize the analyzer finding, explain the likely issue, and give the next checks. "
+                        "Do not include lab report advice or continue prior unrelated topics unless explicitly asked in the current message."
+                    )
                 full = ""
                 stream = await client.chat.completions.create(
                     model=model_small,
-                    messages=[{"role": "system", "content": sys_p}] + conversation_history,
-                    stream=True, max_tokens=int(get_setting('max_tokens_small') or 512),
+                    messages=[{"role": "system", "content": sys_p}] + request_history,
+                    stream=True, max_tokens=(384 if message_mode == 'circuit_analyzer' else int(get_setting('max_tokens_small') or 512)),
                 )
                 async for chunk in stream:
                     token = chunk.choices[0].delta.content or ""

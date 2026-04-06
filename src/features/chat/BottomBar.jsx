@@ -21,6 +21,7 @@ export default function BottomBar({
   setShowScrollBtn,
   scrollBottom,
   mode = 'assistant', // 'assistant' (typed-only) or 'voice' (with mic)
+  circuitDisabled = false,
 }) {
   const typedOnly = mode === 'assistant'
   const barStateClass = !typedOnly && pipelineState === 'listening'
@@ -28,6 +29,29 @@ export default function BottomBar({
     : !typedOnly && (pipelineState === 'transcribing' || phase === 'thinking' || phase === 'streaming')
       ? ' bar-thinking'
       : ''
+
+
+  const toggleMic = () => {
+    const nextType = phase === 'listening' ? 'stop' : 'listen'
+    const ws = audioWsRef.current
+    if (!ws) return
+
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: nextType }))
+      return
+    }
+
+    if (nextType === 'listen' && ws.readyState === WebSocket.CONNECTING) {
+      if (ws.__pendingListen) return
+      ws.__pendingListen = true
+      ws.addEventListener('open', () => {
+        ws.__pendingListen = false
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'listen' }))
+        }
+      }, { once: true })
+    }
+  }
 
   return (
     <div className="bottom-wrap">
@@ -71,10 +95,11 @@ export default function BottomBar({
             </div>
             <div className="bar-actions">
               <div className="bar-left">
-                <button className="bar-btn" onClick={onCircuitOpen} title="Circuit analyzer">
+                <button className="bar-btn bar-btn-debug" onClick={onCircuitOpen} title={circuitDisabled ? 'Please wait for the current response to finish' : 'Open circuit debug analyzer'} disabled={circuitDisabled}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <rect x="2" y="2" width="20" height="20" rx="3"/><path d="M7 12h2l2-4 2 8 2-4h2"/>
                   </svg>
+                  <span>Debug</span>
                 </button>
               </div>
               {(phase === 'thinking' || phase === 'streaming')
@@ -120,10 +145,11 @@ export default function BottomBar({
             </div>
             <div className="bar-actions">
               <div className="bar-left">
-                <button className="bar-btn" onClick={onCircuitOpen} title="Circuit analyzer">
+                <button className="bar-btn bar-btn-debug" onClick={onCircuitOpen} title={circuitDisabled ? 'Please wait for the current response to finish' : 'Open circuit debug analyzer'} disabled={circuitDisabled}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <rect x="2" y="2" width="20" height="20" rx="3"/><path d="M7 12h2l2-4 2 8 2-4h2"/>
                   </svg>
+                  <span>Debug</span>
                 </button>
                 <button className="bar-btn" onClick={() => { setTypingOpen(false); setTypedText('') }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -149,13 +175,7 @@ export default function BottomBar({
                     </button>
                   : <button
                       className={`mic-btn ${phase === 'listening' ? 'listening' : ''}`}
-                      onClick={() => {
-                        if (audioWsRef.current?.readyState === WebSocket.OPEN) {
-                          audioWsRef.current.send(JSON.stringify({
-                            type: phase === 'listening' ? 'stop' : 'listen'
-                          }))
-                        }
-                      }}
+                      onClick={toggleMic}
                     >
                       <WaveformIcon size={18} color={phase === 'listening' ? 'white' : '#000'} />
                     </button>
@@ -166,10 +186,11 @@ export default function BottomBar({
 
         {!typedOnly && !typingOpen && (
           <div className="bar-row">
-            <button className="bar-btn" onClick={onCircuitOpen} title="Circuit analyzer">
+            <button className="bar-btn bar-btn-debug" onClick={onCircuitOpen} title={circuitDisabled ? 'Please wait for the current response to finish' : 'Open circuit debug analyzer'} disabled={circuitDisabled}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <rect x="2" y="2" width="20" height="20" rx="3"/><path d="M7 12h2l2-4 2 8 2-4h2"/>
               </svg>
+              <span>Debug</span>
             </button>
 
             <button className="type-hint-btn" onClick={() => setTypingOpen(true)}>
@@ -194,13 +215,7 @@ export default function BottomBar({
                 </button>
               : <button
                   className={`mic-btn ${phase === 'listening' ? 'listening' : ''}`}
-                  onClick={() => {
-                    if (audioWsRef.current?.readyState === WebSocket.OPEN) {
-                      audioWsRef.current.send(JSON.stringify({
-                        type: phase === 'listening' ? 'stop' : 'listen'
-                      }))
-                    }
-                  }}
+                  onClick={toggleMic}
                   title={phase === 'listening' ? 'Stop listening' : 'Start listening'}
                 >
                   <WaveformIcon size={18} color={phase === 'listening' ? 'white' : '#000'} />

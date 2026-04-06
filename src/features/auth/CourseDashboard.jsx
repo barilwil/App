@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { API_URL } from '../../app/constants'
 
 export default function CourseDashboard({ ta, onLogout, onOpenAdmin, onLaunchLab }) {
@@ -6,6 +7,52 @@ export default function CourseDashboard({ ta, onLogout, onOpenAdmin, onLaunchLab
   const [labsMap, setLabsMap] = useState({})
   const [expanded, setExpanded] = useState({})
   const [loading, setLoading] = useState(true)
+  const [appWindow, setAppWindow] = useState(null)
+  const [windowReady, setWindowReady] = useState(false)
+  const [isMaximized, setIsMaximized] = useState(false)
+
+  useEffect(() => {
+    try {
+      const win = getCurrentWindow()
+      setAppWindow(win)
+      setWindowReady(!!win)
+    } catch {
+      setAppWindow(null)
+      setWindowReady(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!appWindow) return
+    let unlisten = null
+
+    const syncWindowState = async () => {
+      try {
+        setIsMaximized(await appWindow.isMaximized())
+      } catch {
+        setIsMaximized(false)
+      }
+    }
+
+    syncWindowState()
+
+    ;(async () => {
+      try {
+        unlisten = await appWindow.onResized(syncWindowState)
+      } catch {}
+    })()
+
+    return () => {
+      if (typeof unlisten === 'function') unlisten()
+    }
+  }, [appWindow])
+
+  const canUseWindowControls = useMemo(() => (
+    !!appWindow &&
+    typeof appWindow.minimize === 'function' &&
+    typeof appWindow.toggleMaximize === 'function' &&
+    typeof appWindow.close === 'function'
+  ), [appWindow])
 
   const fetchCourses = async () => {
     setLoading(true)
@@ -37,20 +84,141 @@ export default function CourseDashboard({ ta, onLogout, onOpenAdmin, onLaunchLab
     if (!labsMap[id]) fetchLabs(id)
   }
 
+  const handleMinimize = async (e) => {
+    e?.preventDefault?.()
+    e?.stopPropagation?.()
+    if (!canUseWindowControls) return
+    try { await appWindow.minimize() } catch {}
+  }
+
+  const handleToggleMaximize = async (e) => {
+    e?.preventDefault?.()
+    e?.stopPropagation?.()
+    if (!canUseWindowControls) return
+    try {
+      await appWindow.toggleMaximize()
+      setIsMaximized(await appWindow.isMaximized())
+    } catch {}
+  }
+
+  const handleClose = async (e) => {
+    e?.preventDefault?.()
+    e?.stopPropagation?.()
+    if (!canUseWindowControls) return
+    try { await appWindow.close() } catch {}
+  }
+
+  const windowBtnBase = {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    border: '1px solid var(--border)',
+    background: 'transparent',
+    color: 'var(--text-2)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: canUseWindowControls ? 'pointer' : 'default',
+    fontFamily: 'var(--font)',
+    transition: 'color 0.15s, background 0.15s, border-color 0.15s, opacity 0.15s',
+    opacity: canUseWindowControls ? 1 : 0.45,
+  }
+
   const topBar = (
-    <div style={{ height: 52, borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', flexShrink: 0, WebkitAppRegion: 'drag' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, WebkitAppRegion: 'no-drag' }}>
+    <div style={{ height: 52, borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }} data-tauri-drag-region>
         <div style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-2)" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         </div>
         <span style={{ fontSize: 13, fontWeight: 500, letterSpacing: '-0.01em' }}>Circuit AI</span>
         <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '2px 8px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--pill)' }}>TA Dashboard</span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, WebkitAppRegion: 'no-drag' }}>
+
+      <div style={{ flex: 1, height: '100%' }} data-tauri-drag-region />
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{ta?.name}</span>
         <button onClick={onLogout} style={{ padding: '5px 12px', borderRadius: 'var(--pill)', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-2)', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--font)', transition: 'color 0.15s' }}
           onMouseEnter={e => e.currentTarget.style.color = 'var(--text)'}
           onMouseLeave={e => e.currentTarget.style.color = 'var(--text-2)'}>Sign out</button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 4 }}>
+          <button
+            onClick={handleMinimize}
+            title={windowReady ? 'Minimize' : 'Window controls unavailable'}
+            aria-label="Minimize window"
+            disabled={!canUseWindowControls}
+            style={windowBtnBase}
+            onMouseEnter={e => {
+              if (!canUseWindowControls) return
+              e.currentTarget.style.color = 'var(--text)'
+              e.currentTarget.style.background = 'var(--surface-2)'
+              e.currentTarget.style.borderColor = 'var(--border-2)'
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.color = 'var(--text-2)'
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.borderColor = 'var(--border)'
+            }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+              <path d="M5 12h14" />
+            </svg>
+          </button>
+
+          <button
+            onClick={handleToggleMaximize}
+            title={!windowReady ? 'Window controls unavailable' : (isMaximized ? 'Restore' : 'Maximize')}
+            aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
+            disabled={!canUseWindowControls}
+            style={windowBtnBase}
+            onMouseEnter={e => {
+              if (!canUseWindowControls) return
+              e.currentTarget.style.color = 'var(--text)'
+              e.currentTarget.style.background = 'var(--surface-2)'
+              e.currentTarget.style.borderColor = 'var(--border-2)'
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.color = 'var(--text-2)'
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.borderColor = 'var(--border)'
+            }}
+          >
+            {isMaximized ? (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 3h11a2 2 0 0 1 2 2v11" />
+                <path d="M5 8h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Z" />
+              </svg>
+            ) : (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="4" y="4" width="16" height="16" rx="1.5" />
+              </svg>
+            )}
+          </button>
+
+          <button
+            onClick={handleClose}
+            title={windowReady ? 'Close' : 'Window controls unavailable'}
+            aria-label="Close window"
+            disabled={!canUseWindowControls}
+            style={windowBtnBase}
+            onMouseEnter={e => {
+              if (!canUseWindowControls) return
+              e.currentTarget.style.color = '#fff'
+              e.currentTarget.style.background = 'rgba(220, 38, 38, 0.9)'
+              e.currentTarget.style.borderColor = 'rgba(220, 38, 38, 1)'
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.color = 'var(--text-2)'
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.borderColor = 'var(--border)'
+            }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   )
