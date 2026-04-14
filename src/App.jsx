@@ -43,6 +43,13 @@ export default function App() {
   const [liveText, setLiveText]     = useState('')
   const [circuitContext, setCircuitContext] = useState(null)
   const [circuitSubmitPending, setCircuitSubmitPending] = useState(false)
+  const [callTAState, setCallTAState] = useState({ status: 'idle', error: '' })
+  const [websiteChats, setWebsiteChats] = useState([])
+  const [websiteChatsLoading, setWebsiteChatsLoading] = useState(false)
+  const [websiteChatError, setWebsiteChatError] = useState('')
+  const [selectedWebsiteChatId, setSelectedWebsiteChatId] = useState('')
+  const [selectedWebsiteChatTitle, setSelectedWebsiteChatTitle] = useState('')
+  const [websiteChatMode, setWebsiteChatMode] = useState('idle')
 
   // ── UIN form state ─────────────────────────────────────────────────────────
   const [uinInput, setUinInput]   = useState('')
@@ -61,6 +68,7 @@ export default function App() {
   const sendMessageRef    = useRef(null)
   const chatTabRef        = useRef(chatTab)
   const prevLabIdRef      = useRef(null)
+  const autoWebsiteChatKeyRef = useRef('')
 
   // ── Keep refs in sync ──────────────────────────────────────────────────────
   useEffect(() => { messagesRef.current = messages }, [messages])
@@ -92,7 +100,18 @@ export default function App() {
   }, [])
 
   // ── Hooks ──────────────────────────────────────────────────────────────────
-  const { saveConversation } = useConversationPersistence({ student, activeLab: { id: conversationLabId } })
+  const { saveConversation } = useConversationPersistence({
+    student,
+    activeLab: { id: conversationLabId },
+    websiteChatSync: selectedWebsiteChatId ? {
+      chatId: selectedWebsiteChatId,
+      title: selectedWebsiteChatTitle,
+      courseName: activeCourse?.name || null,
+      courseCode: activeCourse?.code || null,
+      labName: activeLab?.name || null,
+      labNumber: activeLab?.number ?? null,
+    } : null,
+  })
 
   const { sleeping, setSleeping, resetSleep } = useSleepTimer({
     active: screen === 'chat',
@@ -397,6 +416,213 @@ export default function App() {
     }
   }, [phase, circuitSubmitPending, sendMessage, scrollBottom, setPhase, thinkStartRef])
 
+  const handleCallTA = useCallback(async () => {
+    if (!student || !activeLab) return false
+
+    setCallTAState({ status: 'submitting', error: '' })
+
+    try {
+      const resp = await fetch(`${API_URL}/call-ta`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          student_uin: student?.uin != null ? String(student.uin) : null,
+          student_name: student?.name || null,
+          course_id: activeCourse?.id != null ? String(activeCourse.id) : null,
+          course_name: activeCourse?.name || activeCourse?.code || null,
+          lab_id: activeLab?.id != null ? String(activeLab.id) : null,
+          lab_name: activeLab?.name || null,
+          lab_number: activeLab?.number ?? null,
+        })
+      })
+
+      const data = await resp.json().catch(() => null)
+      if (!resp.ok) throw new Error(data?.detail || 'Failed to notify the website admins')
+
+      setCallTAState({ status: 'submitted', error: '' })
+      return true
+    } catch (err) {
+      setCallTAState({ status: 'error', error: err?.message || 'Failed to notify the website admins' })
+      return false
+    }
+  }, [student, activeLab, activeCourse])
+
+  const refreshWebsiteChats = useCallback(async () => {
+    if (!student?.uin || !activeCourse || !activeLab) {
+      setWebsiteChats([])
+      setWebsiteChatError('')
+      return []
+    }
+
+    setWebsiteChatsLoading(true)
+    setWebsiteChatError('')
+    try {
+      const params = new URLSearchParams({
+        student_uin: String(student.uin),
+        course_name: activeCourse?.name || '',
+        course_code: activeCourse?.code || '',
+        lab_name: activeLab?.name || '',
+      })
+      if (activeLab?.number != null) params.set('lab_number', String(activeLab.number))
+      const resp = await fetch(`${API_URL}/website-chats?${params.toString()}`)
+      const data = await resp.json().catch(() => null)
+      if (!resp.ok) throw new Error(data?.detail || 'Failed to load website chats')
+      const items = Array.isArray(data) ? data : []
+      setWebsiteChats(items)
+      return items
+    } catch (err) {
+      setWebsiteChats([])
+      setWebsiteChatError(err?.message || 'Failed to load website chats')
+      return []
+    } finally {
+      setWebsiteChatsLoading(false)
+    }
+  }, [student?.uin, activeCourse?.name, activeCourse?.code, activeLab?.name, activeLab?.number])
+
+  const loadWebsiteChat = useCallback(async (chatId) => {
+    if (!chatId || !student?.uin || !activeCourse || !activeLab) {
+      setSelectedWebsiteChatId('')
+      setSelectedWebsiteChatTitle('')
+      return false
+    }
+
+    setWebsiteChatError('')
+    try {
+      const params = new URLSearchParams({
+        student_uin: String(student.uin),
+        course_name: activeCourse?.name || '',
+        course_code: activeCourse?.code || '',
+        lab_name: activeLab?.name || '',
+      })
+      if (activeLab?.number != null) params.set('lab_number', String(activeLab.number))
+      const resp = await fetch(`${API_URL}/website-chats/${encodeURIComponent(chatId)}?${params.toString()}`)
+      const data = await resp.json().catch(() => null)
+      if (!resp.ok) throw new Error(data?.detail || 'Failed to open the website chat')
+
+      const historyMessages = (data?.messages || [])
+        .filter((m) => ['user', 'assistant'].includes(m.role))
+        .map((m) => ({ role: m.role, content: m.content || '' }))
+      const uiMessages = historyMessages.map((m) => ({ role: m.role === 'assistant' ? 'ai' : 'user', text: m.content }))
+
+      setSelectedWebsiteChatId(data.id)
+      setSelectedWebsiteChatTitle(data.title || '')
+      setMessages(uiMessages)
+      setStudent((prev) => prev ? { ...prev, messages: historyMessages } : prev)
+      setStreamText('')
+      setLiveText('')
+      setTypingOpen(false)
+      setTypedText('')
+      setPhase('idle')
+      setWebsiteChatMode('website')
+
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'init', history: historyMessages }))
+      }
+      return true
+    } catch (err) {
+      setWebsiteChatError(err?.message || 'Failed to open the website chat')
+      return false
+    }
+  }, [student?.uin, activeCourse?.name, activeCourse?.code, activeLab?.name, activeLab?.number, wsRef])
+
+  const createWebsiteChat = useCallback(async () => {
+    if (!student?.uin || !activeCourse || !activeLab) return false
+    setWebsiteChatError('')
+    try {
+      const resp = await fetch(`${API_URL}/website-chats/new`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          student_uin: String(student.uin),
+          student_name: student.name || null,
+          course_name: activeCourse?.name || null,
+          course_code: activeCourse?.code || null,
+          lab_name: activeLab?.name || null,
+          lab_number: activeLab?.number ?? null,
+        })
+      })
+      const data = await resp.json().catch(() => null)
+      if (!resp.ok) throw new Error(data?.detail || 'Failed to create a website chat')
+      await refreshWebsiteChats()
+      const opened = await loadWebsiteChat(data.id)
+      setWebsiteChatMode(opened ? 'website' : 'fallback')
+      return opened
+    } catch (err) {
+      setWebsiteChatError(err?.message || 'Failed to create a website chat')
+      return false
+    }
+  }, [student?.uin, student?.name, activeCourse?.name, activeCourse?.code, activeLab?.name, activeLab?.number, refreshWebsiteChats, loadWebsiteChat])
+
+  useEffect(() => {
+    setCallTAState({ status: 'idle', error: '' })
+  }, [student?.uin, activeLab?.id])
+
+  useEffect(() => {
+    if (screen !== 'chat' || !student?.uin || !activeCourse || !activeLab) {
+      setWebsiteChats([])
+      setSelectedWebsiteChatId('')
+      setSelectedWebsiteChatTitle('')
+      setWebsiteChatError('')
+      return
+    }
+
+    let cancelled = false
+    refreshWebsiteChats().then((items) => {
+      if (cancelled) return
+      if (selectedWebsiteChatId && !items.some((item) => item.id === selectedWebsiteChatId)) {
+        setSelectedWebsiteChatId('')
+        setSelectedWebsiteChatTitle('')
+      }
+      if (selectedWebsiteChatId) {
+        const selected = items.find((item) => item.id === selectedWebsiteChatId)
+        if (selected) setSelectedWebsiteChatTitle(selected.title || '')
+      }
+    })
+    return () => { cancelled = true }
+  }, [screen, student?.uin, activeCourse?.name, activeCourse?.code, activeLab?.name, refreshWebsiteChats, selectedWebsiteChatId])
+
+  useEffect(() => {
+    if (screen !== 'chat' || !student?.uin || !activeCourse || !activeLab) {
+      autoWebsiteChatKeyRef.current = ''
+      setWebsiteChatMode('idle')
+      return
+    }
+
+    const contextKey = [
+      student.uin,
+      activeCourse?.code || activeCourse?.name || '',
+      activeLab?.number ?? activeLab?.id ?? '',
+    ].join('|')
+
+    if (autoWebsiteChatKeyRef.current === contextKey && selectedWebsiteChatId) {
+      setWebsiteChatMode('website')
+      return
+    }
+
+    autoWebsiteChatKeyRef.current = contextKey
+    let cancelled = false
+
+    const ensureWebsiteBackedChat = async () => {
+      setWebsiteChatMode('preparing')
+      const items = await refreshWebsiteChats()
+      if (cancelled) return
+
+      const preferred = (selectedWebsiteChatId && items.find((item) => item.id === selectedWebsiteChatId)) || items[0]
+
+      if (preferred) {
+        const ok = await loadWebsiteChat(preferred.id)
+        if (!cancelled) setWebsiteChatMode(ok ? 'website' : 'fallback')
+        return
+      }
+
+      const created = await createWebsiteChat()
+      if (!cancelled) setWebsiteChatMode(created ? 'website' : 'fallback')
+    }
+
+    ensureWebsiteBackedChat()
+    return () => { cancelled = true }
+  }, [screen, student?.uin, activeCourse?.name, activeCourse?.code, activeLab?.id, activeLab?.number, activeLab?.name, selectedWebsiteChatId, refreshWebsiteChats, loadWebsiteChat, createWebsiteChat])
+
   const handleTaLogout = useCallback(async () => {
     if (ta?.token) {
       fetch(`${API_URL}/ta/logout`, {
@@ -421,6 +647,12 @@ export default function App() {
     setConversationLabId(null)
     prevLabIdRef.current = null
     setMessages([])
+    setWebsiteChats([])
+    setWebsiteChatsLoading(false)
+    setWebsiteChatError('')
+    setSelectedWebsiteChatId('')
+    setSelectedWebsiteChatTitle('')
+    setWebsiteChatMode('idle')
     setStreamText('')
     setLiveText('')
     setUinInput('')
@@ -492,6 +724,16 @@ export default function App() {
         activeCourse={activeCourse}
         ta={ta}
         dashVoice={dashVoice}
+        onCallTA={handleCallTA}
+        callTAState={callTAState}
+        websiteChats={websiteChats}
+        websiteChatsLoading={websiteChatsLoading}
+        websiteChatError={websiteChatError}
+        selectedWebsiteChatId={selectedWebsiteChatId}
+        websiteChatMode={websiteChatMode}
+        onSelectWebsiteChat={loadWebsiteChat}
+        onRefreshWebsiteChats={refreshWebsiteChats}
+        onCreateWebsiteChat={createWebsiteChat}
       />
     )
   }

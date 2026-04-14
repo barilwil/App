@@ -201,7 +201,7 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab, subm
 
   const parseMap = (vals, label) => {
     const out = {}
-    for (const [k, v] of Object.entries(vals)) {
+    for (const [k, v] of Object.entries(vals || {})) {
       const t = String(v || '').trim()
       if (!t) continue
       const n = Number(t)
@@ -233,8 +233,8 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab, subm
   }, [selectedVariationImageUrl])
 
   const buildSummary = (p) => {
-    const nl = Object.entries(p.node_voltages).map(([k, v]) => `- ${k}: ${v} V`).join('\n')
-    const sl = Object.entries(p.source_currents).map(([k, v]) => `- ${k}: ${v} A`).join('\n')
+    const nl = Object.entries(p.node_voltages || {}).map(([k, v]) => `- ${k}: ${v} V`).join('\n')
+    const sl = Object.entries(p.source_currents || {}).map(([k, v]) => `- ${k}: ${v} A`).join('\n')
     const taskLine = activeTask ? `Task: ${activeTask.task_label}` : null
     const variationLine = selectedVariation?.variation_label ? `Variation: ${selectedVariation.variation_label}` : null
     return [
@@ -263,7 +263,7 @@ export default function CircuitDrawer({ open, onClose, onSubmit, activeLab, subm
       const payload = {
         circuit_name: selected,
         node_voltages: nv,
-        source_currents: sv,
+        ...(Object.keys(sv || {}).length ? { source_currents: sv } : {}),
         temp: HARDCODED_TEMP,
         tnom: HARDCODED_TNOM,
         strict: HARDCODED_STRICT,

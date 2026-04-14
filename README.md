@@ -27,6 +27,6 @@ Redesign circuit analyzer tab
 
 ### App issues
 
-Maybe change website theme from black to grey
+im having this bug only on the jetson that the listening button is not able to be re-pressed. so if you press it once it cant disactivate it. but it shows in the backend that its stops but in the ui, it does not.
 
 ###

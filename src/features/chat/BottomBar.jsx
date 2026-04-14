@@ -22,6 +22,7 @@ export default function BottomBar({
   scrollBottom,
   mode = 'assistant', // 'assistant' (typed-only) or 'voice' (with mic)
   circuitDisabled = false,
+  disabled = false,
 }) {
   const typedOnly = mode === 'assistant'
   const barStateClass = !typedOnly && pipelineState === 'listening'
@@ -84,18 +85,20 @@ export default function BottomBar({
                 ref={textareaRef}
                 className="bar-textarea"
                 value={typedText}
+                disabled={disabled}
                 onChange={e => setTypedText(e.target.value)}
                 onKeyDown={e => {
+                  if (disabled) return
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (typedText.trim()) sendMessage(typedText) }
                 }}
-                placeholder="Type a message…"
+                placeholder={disabled ? 'Preparing website-backed chat…' : 'Type a message…'}
                 rows={1}
                 autoFocus
               />
             </div>
             <div className="bar-actions">
               <div className="bar-left">
-                <button className="bar-btn bar-btn-debug" onClick={onCircuitOpen} title={circuitDisabled ? 'Please wait for the current response to finish' : 'Open circuit debug analyzer'} disabled={circuitDisabled}>
+                <button className="bar-btn bar-btn-debug" onClick={onCircuitOpen} title={circuitDisabled ? 'Please wait for the current response to finish' : 'Open circuit debug analyzer'} disabled={circuitDisabled || disabled}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <rect x="2" y="2" width="20" height="20" rx="3"/><path d="M7 12h2l2-4 2 8 2-4h2"/>
                   </svg>
@@ -113,7 +116,7 @@ export default function BottomBar({
                     </svg>
                   </button>
                 : typedText.trim()
-                  ? <button className="send-btn" onClick={() => sendMessage(typedText)}>
+                  ? <button className="send-btn" onClick={() => sendMessage(typedText)} disabled={disabled}>
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                         <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
                       </svg>
@@ -134,6 +137,7 @@ export default function BottomBar({
                 value={liveText || typedText}
                 onChange={e => { if (pipelineState === 'idle') setTypedText(e.target.value) }}
                 onKeyDown={e => {
+                  if (disabled) return
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (typedText.trim()) sendMessage(typedText) }
                   if (e.key === 'Escape') { setLiveText(''); setTypingOpen(false); setTypedText('') }
                 }}
@@ -145,7 +149,7 @@ export default function BottomBar({
             </div>
             <div className="bar-actions">
               <div className="bar-left">
-                <button className="bar-btn bar-btn-debug" onClick={onCircuitOpen} title={circuitDisabled ? 'Please wait for the current response to finish' : 'Open circuit debug analyzer'} disabled={circuitDisabled}>
+                <button className="bar-btn bar-btn-debug" onClick={onCircuitOpen} title={circuitDisabled ? 'Please wait for the current response to finish' : 'Open circuit debug analyzer'} disabled={circuitDisabled || disabled}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <rect x="2" y="2" width="20" height="20" rx="3"/><path d="M7 12h2l2-4 2 8 2-4h2"/>
                   </svg>
@@ -168,7 +172,7 @@ export default function BottomBar({
                     </svg>
                   </button>
                 : typedText.trim()
-                  ? <button className="send-btn" onClick={() => sendMessage(typedText)}>
+                  ? <button className="send-btn" onClick={() => sendMessage(typedText)} disabled={disabled}>
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                         <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
                       </svg>

@@ -430,6 +430,82 @@ class TALoginRequest(BaseModel):
     email: str
     password: str
 
+class CallTARequest(BaseModel):
+    student_uin: str | int | None = None
+    student_name: str | None = None
+    course_id: str | int | None = None
+    course_name: str | None = None
+    lab_id: str | int | None = None
+    lab_name: str | None = None
+    note: str | None = None
+
+
+class WebsiteChatContextRequest(BaseModel):
+    student_uin: str | int
+    student_name: str | None = None
+    course_name: str | None = None
+    course_code: str | None = None
+    lab_name: str | None = None
+    lab_number: int | None = None
+
+
+class WebsiteChatSyncMessage(BaseModel):
+    role: str
+    content: str
+
+
+class WebsiteChatCreateRequest(WebsiteChatContextRequest):
+    title: str | None = None
+
+
+class WebsiteChatSyncRequest(WebsiteChatContextRequest):
+    title: str | None = None
+    messages: list[WebsiteChatSyncMessage]
+
+
+class WebsiteUserLinkRequest(BaseModel):
+    student_uin: str | int
+    website_user_email: str | None = None
+    website_user_id: str | None = None
+
+
+def _website_base_url() -> str:
+    return os.getenv("WEBSITE_BASE_URL", "").rstrip("/")
+
+
+def _kiosk_bridge_headers() -> dict[str, str]:
+    kiosk_call_secret = os.getenv("KIOSK_CALL_SECRET", "")
+    if not kiosk_call_secret:
+        raise HTTPException(status_code=503, detail="KIOSK_CALL_SECRET is not configured on the kiosk backend")
+    return {"X-Kiosk-Secret": kiosk_call_secret}
+
+
+def _normalize_context_value(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+async def _proxy_kiosk_bridge(method: str, path: str, *, params: dict | None = None, json_body: dict | None = None):
+    website_base_url = _website_base_url()
+    if not website_base_url:
+        raise HTTPException(status_code=503, detail="WEBSITE_BASE_URL is not configured on the kiosk backend")
+    headers = _kiosk_bridge_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.request(method, f"{website_base_url}{path}", params=params, json=json_body, headers=headers)
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="Could not reach the website backend from the kiosk")
+    if resp.status_code >= 400:
+        detail = None
+        with contextlib.suppress(Exception):
+            detail = resp.json().get("detail")
+        raise HTTPException(status_code=resp.status_code, detail=detail or "Website chat bridge request failed")
+    with contextlib.suppress(Exception):
+        return resp.json()
+    return None
+
 @app.post("/api/ta/login")
 async def ta_login(body: TALoginRequest):
     conn = get_db()
@@ -455,6 +531,121 @@ async def ta_verify(token: str):
     if not session:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return session
+
+@app.post("/api/call-ta")
+async def call_ta(body: CallTARequest):
+    website_base_url = os.getenv("WEBSITE_BASE_URL", "").rstrip("/")
+    kiosk_call_secret = os.getenv("KIOSK_CALL_SECRET", "")
+    kiosk_id = os.getenv("KIOSK_ID", "jetson-kiosk")
+    kiosk_label = os.getenv("KIOSK_LABEL", kiosk_id)
+
+    if not website_base_url:
+        raise HTTPException(status_code=503, detail="WEBSITE_BASE_URL is not configured on the kiosk backend")
+
+    if not kiosk_call_secret:
+        raise HTTPException(status_code=503, detail="KIOSK_CALL_SECRET is not configured on the kiosk backend")
+
+    payload = {
+        "kiosk_id": kiosk_id,
+        "kiosk_label": kiosk_label,
+        "student_uin": (body.student_uin or "").strip() or None,
+        "student_name": (body.student_name or "").strip() or None,
+        "course_id": (body.course_id or "").strip() or None,
+        "course_name": (body.course_name or "").strip() or None,
+        "lab_id": (str(body.lab_id).strip() if body.lab_id is not None else None) or None,
+        "lab_name": (body.lab_name or "").strip() or None,
+        "note": (body.note or "").strip() or None,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{website_base_url}/api/v1/help-requests/kiosk",
+                json=payload,
+                headers={"X-Kiosk-Secret": kiosk_call_secret},
+            )
+
+        if resp.status_code >= 400:
+            detail = None
+            with contextlib.suppress(Exception):
+                detail = resp.json().get("detail")
+            raise HTTPException(status_code=resp.status_code, detail=detail or "Failed to notify website admins")
+
+        return resp.json()
+    except HTTPException:
+        raise
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="Could not reach the website backend from the kiosk")
+
+@app.post("/api/website-chat-link")
+async def website_chat_link_user(body: WebsiteUserLinkRequest):
+    payload = {"student_uin": _normalize_context_value(body.student_uin) or ""}
+    if body.website_user_email:
+        payload["website_user_email"] = body.website_user_email.strip()
+    if body.website_user_id:
+        payload["website_user_id"] = body.website_user_id.strip()
+    return await _proxy_kiosk_bridge("POST", "/api/v1/kiosk-chat-bridge/link-user", json_body=payload)
+
+
+@app.get("/api/website-chats")
+async def list_website_chats(student_uin: str, course_name: str | None = None, course_code: str | None = None, lab_name: str | None = None, lab_number: int | None = None):
+    params = {"student_uin": student_uin}
+    if course_name:
+        params["course_name"] = course_name
+    if course_code:
+        params["course_code"] = course_code
+    if lab_name:
+        params["lab_name"] = lab_name
+    if lab_number is not None:
+        params["lab_number"] = str(lab_number)
+    return await _proxy_kiosk_bridge("GET", "/api/v1/kiosk-chat-bridge/", params=params)
+
+
+@app.get("/api/website-chats/{chat_id}")
+async def get_website_chat(chat_id: str, student_uin: str, course_name: str | None = None, course_code: str | None = None, lab_name: str | None = None, lab_number: int | None = None):
+    params = {"student_uin": student_uin}
+    if course_name:
+        params["course_name"] = course_name
+    if course_code:
+        params["course_code"] = course_code
+    if lab_name:
+        params["lab_name"] = lab_name
+    if lab_number is not None:
+        params["lab_number"] = str(lab_number)
+    return await _proxy_kiosk_bridge("GET", f"/api/v1/kiosk-chat-bridge/{quote(chat_id)}", params=params)
+
+
+@app.post("/api/website-chats/new")
+async def create_website_chat(body: WebsiteChatCreateRequest):
+    payload = {
+        "student_uin": _normalize_context_value(body.student_uin) or "",
+        "student_name": _normalize_context_value(body.student_name),
+        "course_name": _normalize_context_value(body.course_name),
+        "course_code": _normalize_context_value(body.course_code),
+        "lab_name": _normalize_context_value(body.lab_name),
+        "lab_number": body.lab_number,
+        "title": _normalize_context_value(body.title),
+    }
+    return await _proxy_kiosk_bridge("POST", "/api/v1/kiosk-chat-bridge/new", json_body=payload)
+
+
+@app.post("/api/website-chats/{chat_id}/sync")
+async def sync_website_chat(chat_id: str, body: WebsiteChatSyncRequest):
+    payload = {
+        "student_uin": _normalize_context_value(body.student_uin) or "",
+        "student_name": _normalize_context_value(body.student_name),
+        "course_name": _normalize_context_value(body.course_name),
+        "course_code": _normalize_context_value(body.course_code),
+        "lab_name": _normalize_context_value(body.lab_name),
+        "lab_number": body.lab_number,
+        "title": _normalize_context_value(body.title),
+        "messages": [
+            {"role": (m.role or "").strip(), "content": (m.content or "").strip()}
+            for m in (body.messages or []) if (m.content or "").strip()
+        ],
+    }
+    return await _proxy_kiosk_bridge("POST", f"/api/v1/kiosk-chat-bridge/{quote(chat_id)}/sync", json_body=payload)
+
 
 # ── USERS ────────────────────────────────────────────────
 @app.get("/api/users")
@@ -948,8 +1139,12 @@ async def get_nodes(circuit_name: str):
 
 @app.post("/api/debug")
 async def debug_circuit(payload: dict):
+    payload = dict(payload or {})
+    if not payload.get("source_currents"):
+        payload.pop("source_currents", None)
+    logging.getLogger(__name__).info("Normalized /api/debug payload: %s", json.dumps(payload))
     result = await circuit_post("/debug", payload)
-    return {"result": result, "context": build_circuit_analyzer_context(payload, result)}
+    return {"result": result, "submission": payload, "context": build_circuit_analyzer_context(payload, result)}
 
 @app.post("/api/circuit-chat")
 async def circuit_chat(payload: dict):
@@ -992,7 +1187,8 @@ async def text_to_speech(body: dict):
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
     try:
-        audio_bytes, mime_type = await tts_synthesize(text)
+        normalized_text = normalize_for_speech(text)
+        audio_bytes, mime_type = await tts_synthesize(normalized_text)
         return {
             "audio": base64.b64encode(audio_bytes).decode("utf-8"),
             "mime_type": mime_type,
@@ -1123,14 +1319,61 @@ async def audio_websocket(websocket: WebSocket):
 
 
 # ── HELPERS ──────────────────────────────────────────────
+def normalize_for_speech(text: str) -> str:
+    """Prepare assistant text for TTS without changing visible chat text."""
+    s = str(text or "").strip()
+    if not s:
+        return ""
+
+    # Strip control tags / wrappers that should never be spoken.
+    s = re.sub(r'<spoken>.*?</spoken>', ' ', s, flags=re.DOTALL)
+    s = re.sub(r'<guide\s+section="[^"]*"\s*/?>', ' ', s)
+    s = re.sub(r'<handoff\s+reason="[^"]*"\s*/?>', ' ', s)
+    s = re.sub(r'\\\[(.*?)\\\]', r' \1 ', s)
+    s = re.sub(r'\\\((.*?)\\\)', r' \1 ', s)
+    s = s.replace('$$', ' ').replace('$', ' ')
+
+    # Flatten common LaTeX into simple spoken English.
+    s = re.sub(r'\\(?:d?frac)\{([^{}]+)\}\{([^{}]+)\}', r' \1 over \2 ', s)
+    s = re.sub(r'\\text\{([^{}]+)\}', r' \1 ', s)
+    s = re.sub(r'\\cdot|\\times', ' times ', s)
+    s = re.sub(r'\\approx', ' approximately ', s)
+    s = re.sub(r'\\Rightarrow|\\to', ' then ', s)
+    s = re.sub(r'\\Omega', ' ohms ', s)
+    s = re.sub(r'\\quad|\\qquad|\\,|\\;|\\:', ' ', s)
+
+    # Convert subscript-style notation like V_1 or V_{out} to speech-friendly text.
+    s = re.sub(r'([A-Za-z])_\{([A-Za-z0-9]+)\}', r'\1 \2', s)
+    s = re.sub(r'([A-Za-z])_([A-Za-z0-9]+)', r'\1 \2', s)
+
+    # Remove leftover half-rendered LaTeX markers.
+    s = s.replace('\\', ' ')
+    s = s.replace('{', ' ').replace('}', ' ')
+
+    s = s.replace('_', ' ')
+
+    # Common circuit labels: V1 -> V 1, R2 -> R 2, N001 -> N 0 0 1
+    s = re.sub(
+        r'\b([VIRCLQDUNvirclqdun])\s*([0-9]{1,4})\b',
+        lambda m: f"{m.group(1)} {' '.join(m.group(2))}",
+        s,
+    )
+    s = re.sub(
+        r'\b([VvIi])\s+([Nn])\s*([0-9]{1,4})\b',
+        lambda m: f"{m.group(1)} {m.group(2)} {' '.join(m.group(3))}",
+        s,
+    )
+    s = re.sub(r'\s+', ' ', s).strip(' ,;')
+    return s
+
 def extract_spoken(text: str):
     match = re.search(r'<spoken>(.*?)</spoken>', text, re.DOTALL)
     if match:
-        return text[:match.start()].strip(), match.group(1).strip()
+        return text[:match.start()].strip(), normalize_for_speech(match.group(1).strip())
     display = re.sub(r'<spoken>[\s\S]*$', '', text).strip()
     sentences = re.split(r'(?<=[.!?])\s+', display)
     fallback = ' '.join(sentences[:2])[:300].strip() or display[:200].strip()
-    return display, fallback
+    return display, normalize_for_speech(fallback)
 
 def extract_guidance(text: str):
     match = re.search(r'<guide\s+section="([\w-]+)"\s*/?>', text)
@@ -1202,7 +1445,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     "- Math: \\(...\\) inline, \\[...\\] display. Never $...$.\n"
                     "- No raw HTML tags.\n"
                     "- Use the retrieved lab-manual output when it is available, and do not contradict it.\n"
-                    "End with: <spoken>2-3 sentence plain summary for TTS.</spoken>"
                 )
                 if lab_number is not None:
                     sys_p += f"\n\nCurrent lab number: {lab_number}."
@@ -1259,7 +1501,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     if current_part:
                         sys_p += f"\nThe student is currently working on: {current_part}."
                     if dashboard_context.get("mode") == "voice":
-                        sys_p += "\nThe student is using voice mode on the lab dashboard."
+                        sys_p += (
+                            "\nThe student is using voice mode on the lab dashboard. "
+                            "Write for text-to-speech: never output LaTeX, backslashes, underscore notation, or symbol markup. "
+                            "Say circuit labels in plain spoken text, for example V1 as 'V 1', R2 as 'R 2', V_out as 'V out', and N001 as 'N 0 0 1'."
+                        )
                 if message_mode == "circuit_analyzer":
                     sys_p += (
                         "\n\nThis message came from the circuit analyzer submit flow. Treat it as a structured debug request. "
@@ -1280,9 +1526,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 guidance = extract_guidance(full)
                 handoff = extract_handoff(full)
                 clean = clean_dashboard_tags(full.strip())
+                spoken_clean = normalize_for_speech(clean)
                 await websocket.send_text(json.dumps({
                     "type": "done",
-                    "spoken_text": clean,
+                    "spoken_text": spoken_clean,
                     "display_text": clean,
                     "guidance_section": guidance,
                     "handoff": handoff,

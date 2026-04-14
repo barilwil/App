@@ -1,14 +1,17 @@
 import Markdown from '../../components/Markdown'
 
+const REASONING_RE = /<details\b[^>]*type=["']reasoning["'][^>]*>/i
+
 export default function AIMessage({ text, interrupted, thinkDuration }) {
+  const content = REASONING_RE.test(text || '')
+    ? text
+    : (thinkDuration !== null && thinkDuration !== undefined
+      ? `<details type="reasoning" done="true" duration="0"><summary>Thought for ${thinkDuration} seconds</summary></details>\n\n${text || ''}`
+      : (text || ''))
+
   return (
     <div className="ai-msg-wrap">
-      {thinkDuration !== null && thinkDuration !== undefined && (
-        <div className="think-duration">
-          Thought for {thinkDuration}s
-        </div>
-      )}
-      <Markdown content={text} />
+      <Markdown content={content} />
       {interrupted && (
         <div className="interrupted-bar">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

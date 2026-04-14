@@ -43,6 +43,16 @@ export default function ChatScreen({
                                      ta,
                                      dashVoice,
                                      circuitSubmitPending,
+                                     onCallTA,
+                                     callTAState,
+                                     websiteChats,
+                                     websiteChatsLoading,
+                                     websiteChatError,
+                                     selectedWebsiteChatId,
+                                     websiteChatMode = 'idle',
+                                     onSelectWebsiteChat,
+                                     onRefreshWebsiteChats,
+                                     onCreateWebsiteChat,
                                    }) {
   const [circuitOpen, setCircuitOpen] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
@@ -167,14 +177,17 @@ export default function ChatScreen({
             )}
           </div>
           <div className="top-bar-right">
-            {/*
-          <button className="ta-btn" onClick={() => {}} title="Call TA (coming soon)">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.44 2 2 0 0 1 3.6 1.25h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.91a16 16 0 0 0 6 6l.92-.92a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21.73 16.92z"/>
-            </svg>
-            Call TA
-          </button>
-          */}
+            <button
+              className={`ta-btn${callTAState?.status === 'submitted' ? ' is-success' : callTAState?.status === 'error' ? ' is-error' : ''}`}
+              onClick={onCallTA}
+              disabled={!student || !activeLab || callTAState?.status === 'submitting' || callTAState?.status === 'submitted'}
+              title={callTAState?.error || 'Notify website admins that this student needs help'}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.44 2 2 0 0 1 3.6 1.25h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.91a16 16 0 0 0 6 6l.92-.92a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21.73 16.92z"/>
+              </svg>
+              {callTAState?.status === 'submitting' ? 'Calling…' : callTAState?.status === 'submitted' ? 'TA Requested' : callTAState?.status === 'error' ? 'Retry Call TA' : 'Call TA'}
+            </button>
             <button className="end-btn" onClick={handleEnd}>End session</button>
           </div>
         </div>
@@ -209,6 +222,47 @@ export default function ChatScreen({
         {/* Lab Assistant tab — typed-only, full conversation */}
         {chatTab === 'assistant' && (
             <div className="convo" ref={convoRef}>
+              <div className="website-chat-strip">
+                <div className="website-chat-strip__meta">
+                  <div className="website-chat-strip__eyebrow">Website chat</div>
+                  <div className={`website-chat-strip__status website-chat-strip__status--${websiteChatMode}`}>
+                    {websiteChatMode === 'website' ? 'Website-backed chat' : websiteChatMode === 'preparing' ? 'Preparing website-backed chat…' : websiteChatMode === 'fallback' ? 'Local-only fallback' : 'No website chat selected'}
+                  </div>
+                </div>
+
+                <div className="website-chat-strip__controls">
+                  <div className="website-chat-strip__select-shell">
+                    <svg className="website-chat-strip__select-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    <select
+                      className="website-chat-strip__select"
+                      value={selectedWebsiteChatId || ''}
+                      onChange={(e) => onSelectWebsiteChat?.(e.target.value)}
+                      disabled={websiteChatsLoading || websiteChatMode === 'preparing'}
+                    >
+                      <option value="" disabled hidden>Choose a website chat…</option>
+                      {(websiteChats || []).map((chat) => (
+                        <option key={chat.id} value={chat.id}>
+                          {chat.title}
+                        </option>
+                      ))}
+                    </select>
+                    <svg className="website-chat-strip__chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="m6 9 6 6 6-6"/>
+                    </svg>
+                  </div>
+                  <button className="website-chat-strip__btn" onClick={onRefreshWebsiteChats} disabled={websiteChatsLoading || websiteChatMode === 'preparing'}>
+                    {websiteChatsLoading ? 'Loading…' : 'Refresh'}
+                  </button>
+                  <button className="website-chat-strip__btn" onClick={onCreateWebsiteChat} disabled={websiteChatMode === 'preparing' || !!selectedWebsiteChatId}>
+                    New Website Chat
+                  </button>
+                </div>
+              </div>
+              {(websiteChatError || '').trim() && (
+                <div className="website-chat-strip__error">{websiteChatError}</div>
+              )}
               <div className="convo-inner">
                 {messages.map((m, i) => {
                   const isLatestUser = m.role === 'user' &&
@@ -269,6 +323,7 @@ export default function ChatScreen({
                 setShowScrollBtn={setShowScrollBtn}
                 scrollBottom={scrollBottom}
                 mode="assistant"
+                disabled={websiteChatMode === 'preparing'}
             />
         )}
 

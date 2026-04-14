@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { getCourses, getLabsForCourse } from '../../widgets/index'
 import { API_URL as API } from '../../app/constants'
 
@@ -186,8 +186,88 @@ function selectStyle(hasValue = true, extra = {}) {
 function deriveVariationLabel(circuitName = '') {
   const name = String(circuitName || '').trim()
   if (!name) return ''
+
+  const vectorOnlyMatch = name.match(/_V(\d+)_only$/i)
+  if (vectorOnlyMatch) return `V${vectorOnlyMatch[1]} only`
+
   const parts = name.split('_')
   return parts.length > 1 ? parts[parts.length - 1] : name
+}
+
+function naturalCompare(a = '', b = '') {
+  return String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' })
+}
+
+function deriveCircuitFamilyKey(circuitName = '', availableCircuits = []) {
+  const name = String(circuitName || '').trim()
+  if (!name) return ''
+
+  const vectorOnlyMatch = name.match(/^(.*)_V\d+_only$/i)
+  if (vectorOnlyMatch) return vectorOnlyMatch[1]
+
+  const hasSpecializedVariants = availableCircuits.some(circuit => String(circuit || '').trim().startsWith(`${name}_V`))
+  if (hasSpecializedVariants) return name
+
+  const parts = name.split('_').filter(Boolean)
+  return parts.length > 1 ? parts.slice(0, -1).join('_') : name
+}
+
+function suggestVariationLabel(circuitName = '', availableCircuits = []) {
+  const name = String(circuitName || '').trim()
+  if (!name) return ''
+
+  const familyKey = deriveCircuitFamilyKey(name, availableCircuits)
+  const hasSpecializedVariants = availableCircuits.some(candidate => String(candidate || '').trim().startsWith(`${familyKey}_V`))
+  return name === familyKey && hasSpecializedVariants ? 'Base' : deriveVariationLabel(name)
+}
+
+function buildCircuitFamilies(availableCircuits = []) {
+  const groups = new Map()
+
+  for (const circuit of availableCircuits) {
+    const circuitName = String(circuit || '').trim()
+    if (!circuitName) continue
+
+    const familyKey = deriveCircuitFamilyKey(circuitName, availableCircuits)
+    const hasSpecializedVariants = availableCircuits.some(candidate => String(candidate || '').trim().startsWith(`${familyKey}_V`))
+    const variationLabel = circuitName === familyKey && hasSpecializedVariants
+      ? 'Base'
+      : suggestVariationLabel(circuitName, availableCircuits)
+
+    if (!groups.has(familyKey)) {
+      groups.set(familyKey, {
+        key: familyKey,
+        label: familyKey,
+        variations: [],
+      })
+    }
+
+    groups.get(familyKey).variations.push({
+      circuit_name: circuitName,
+      label: variationLabel,
+    })
+  }
+
+  return Array.from(groups.values())
+    .map(group => ({
+      ...group,
+      variations: group.variations.sort((a, b) => naturalCompare(a.label, b.label) || naturalCompare(a.circuit_name, b.circuit_name)),
+    }))
+    .sort((a, b) => naturalCompare(a.label, b.label))
+}
+
+function getCircuitFamilyByKey(circuitFamilies = [], familyKey = '') {
+  const key = String(familyKey || '').trim()
+  return circuitFamilies.find(family => family.key === key) || null
+}
+
+function getCircuitFamilyByCircuitName(circuitFamilies = [], circuitName = '') {
+  const name = String(circuitName || '').trim()
+  return circuitFamilies.find(family => family.variations.some(variation => variation.circuit_name === name)) || null
+}
+
+function getFirstCircuitInFamily(circuitFamilies = [], familyKey = '') {
+  return getCircuitFamilyByKey(circuitFamilies, familyKey)?.variations?.[0]?.circuit_name || ''
 }
 
 function normalizeImagePath(imagePath = '') {
@@ -233,7 +313,7 @@ function createBlankVariation(availableCircuits = [], imageCatalog = []) {
   const circuit = availableCircuits[0] || ''
   return {
     circuit_name: circuit,
-    variation_label: circuit ? deriveVariationLabel(circuit) : '',
+    variation_label: circuit ? suggestVariationLabel(circuit, availableCircuits) : '',
     image_path: circuit ? suggestImagePath(imageCatalog, circuit) : '',
   }
 }
@@ -264,7 +344,7 @@ function groupMappingsToTasks(rows = [], availableCircuits = [], imageCatalog = 
     }
     seen.get(taskKey).variations.push({
       circuit_name: String(row?.circuit_name || '').trim(),
-      variation_label: String(row?.variation_label || '').trim() || deriveVariationLabel(row?.circuit_name || ''),
+      variation_label: String(row?.variation_label || '').trim() || suggestVariationLabel(row?.circuit_name || '', availableCircuits),
       image_path: resolveExistingImagePath(imageCatalog, row?.resolved_image_path || row?.image_path || '', row?.circuit_name || ''),
     })
   }
@@ -274,7 +354,7 @@ function groupMappingsToTasks(rows = [], availableCircuits = [], imageCatalog = 
   }))
 }
 
-function flattenTaskMappings(tasks = []) {
+function flattenTaskMappings(tasks = [], availableCircuits = []) {
   const payload = []
   let sortOrder = 0
   for (const task of tasks) {
@@ -288,7 +368,7 @@ function flattenTaskMappings(tasks = []) {
         task_key: taskKey,
         task_label: taskLabel || taskKey,
         circuit_name: circuitName,
-        variation_label: String(variation?.variation_label || '').trim() || deriveVariationLabel(circuitName),
+        variation_label: String(variation?.variation_label || '').trim() || suggestVariationLabel(circuitName, availableCircuits),
         image_path: normalizeImagePath(variation?.image_path || ''),
         sort_order: sortOrder++,
       })
@@ -341,6 +421,7 @@ function EditLabModal({ lab, onClose, onSave }) {
   const [availableCircuits, setAvailableCircuits] = useState([])
   const [availableImages, setAvailableImages] = useState([])
   const [mappingTasks, setMappingTasks] = useState([createBlankTask(0, [], [])])
+  const circuitFamilies = useMemo(() => buildCircuitFamilies(availableCircuits), [availableCircuits])
   const [mappingsLoading, setMappingsLoading] = useState(true)
   const [circuitsLoading, setCircuitsLoading] = useState(true)
   const [imagesLoading, setImagesLoading] = useState(true)
@@ -448,7 +529,7 @@ function EditLabModal({ lab, onClose, onSave }) {
           const next = { ...variation, ...fields }
           if (Object.prototype.hasOwnProperty.call(fields, 'circuit_name')) {
             if (!Object.prototype.hasOwnProperty.call(fields, 'variation_label')) {
-              next.variation_label = deriveVariationLabel(fields.circuit_name)
+              next.variation_label = suggestVariationLabel(fields.circuit_name, availableCircuits)
             }
             if (!Object.prototype.hasOwnProperty.call(fields, 'image_path')) {
               const previousSuggested = suggestImagePath(availableImages, variation.circuit_name)
@@ -464,6 +545,11 @@ function EditLabModal({ lab, onClose, onSave }) {
     }))
   }
 
+  const updateVariationFamily = (taskIndex, variationIndex, familyKey) => {
+    const nextCircuitName = getFirstCircuitInFamily(circuitFamilies, familyKey)
+    updateVariation(taskIndex, variationIndex, { circuit_name: nextCircuitName })
+  }
+
   const resolveVariationImagePath = (variation) => resolveExistingImagePath(availableImages, variation?.image_path || '', variation?.circuit_name || '')
   const resolveVariationImageUrl = (variation) => buildCircuitImageUrl(resolveVariationImagePath(variation))
 
@@ -472,7 +558,7 @@ function EditLabModal({ lab, onClose, onSave }) {
     setMappingError('')
     setSaving(true)
 
-    const mappings = flattenTaskMappings(mappingTasks)
+    const mappings = flattenTaskMappings(mappingTasks, availableCircuits)
     if (mappingTasks.some(task => !String(task.task_key || '').trim() && !String(task.task_label || '').trim())) {
       setMappingError('Each task needs a task key or task label.')
       setSaving(false)
@@ -573,27 +659,48 @@ function EditLabModal({ lab, onClose, onSave }) {
                   {task.variations.map((variation, variationIndex) => {
                     const previewPath = resolveVariationImagePath(variation)
                     const previewUrl = resolveVariationImageUrl(variation)
+                    const selectedFamily = getCircuitFamilyByCircuitName(circuitFamilies, variation.circuit_name)
+                    const selectedFamilyKey = selectedFamily?.key || ''
+                    const familyVariations = selectedFamily?.variations || []
                     return (
                       <div key={`${taskIndex}-${variationIndex}`} style={{ border: '1px solid var(--border)', borderRadius: 'var(--r)', padding: 10, background: 'rgba(255,255,255,0.02)', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1.45fr 0.95fr auto', gap: 10, alignItems: 'end' }}>
-                          <Field label={variationIndex === 0 ? 'API Circuit' : 'API Circuit '}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1.1fr 0.95fr auto', gap: 10, alignItems: 'end' }}>
+                          <Field label={variationIndex === 0 ? 'Circuit Group' : 'Circuit Group '}>
+                            <select
+                              value={selectedFamilyKey}
+                              onChange={e => updateVariationFamily(taskIndex, variationIndex, e.target.value)}
+                              style={selectStyle(!!selectedFamilyKey)}
+                              disabled={availableCircuits.length === 0}
+                            >
+                              <option value="">Select group…</option>
+                              {circuitFamilies.map(family => (
+                                <option key={family.key} value={family.key}>{family.label}</option>
+                              ))}
+                            </select>
+                          </Field>
+                          <Field label={variationIndex === 0 ? 'Circuit Variant' : 'Circuit Variant '}>
                             <select
                               value={variation.circuit_name}
                               onChange={e => updateVariation(taskIndex, variationIndex, { circuit_name: e.target.value })}
                               style={selectStyle(!!variation.circuit_name)}
+                              disabled={!selectedFamily}
                             >
-                              <option value="">Select circuit…</option>
-                              {availableCircuits.map(circuit => (
-                                <option key={circuit} value={circuit}>{circuit}</option>
+                              <option value="">Select variant…</option>
+                              {familyVariations.map(option => (
+                                <option key={option.circuit_name} value={option.circuit_name}>{option.label}</option>
                               ))}
                             </select>
                           </Field>
                           <Field label={variationIndex === 0 ? 'Variation Label' : 'Variation Label '}>
-                            <Input placeholder="e.g. 0 or 1000" value={variation.variation_label} onChange={e => updateVariation(taskIndex, variationIndex, { variation_label: e.target.value })} />
+                            <Input placeholder="e.g. Base, 0, 1000" value={variation.variation_label} onChange={e => updateVariation(taskIndex, variationIndex, { variation_label: e.target.value })} />
                           </Field>
                           <button onClick={() => removeVariation(taskIndex, variationIndex)} style={{ height: 36, padding: '0 12px', borderRadius: 'var(--r)', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-3)', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--font)' }}>
                             Remove
                           </button>
+                        </div>
+
+                        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: -2 }}>
+                          Pick a circuit group first, then choose the exact API variant from the shorter list.
                         </div>
 
                         <div style={{ display: 'grid', gridTemplateColumns: '1.6fr auto 120px', gap: 10, alignItems: 'end' }}>
